@@ -1,0 +1,81 @@
+properties([parameters([
+	  choice(choices: 'dev\ntest\nprod', description: 'your env', name: 'env'),
+    string(defaultValue: '', description: 'service_name', name: 'service_name')
+])])
+
+nodename = env.env;
+
+node(nodename){
+  stage('Login')
+   {
+    print '=-============================================-='
+    print 'Service Name: !!'+service_name+'!!'
+    print'=-=============================================-='
+    currentBuild.description = "service name:  ${service_name}, env: ${env.env}"
+    sh '''
+      set +xv
+      az login --identity
+
+      export AZURE_STORAGE_ACCOUNT=""
+      export RG=""
+      export BLOB="${service_name}-artifactory"
+
+      ACCESS_KEY=`az storage account keys list --account-name $AZURE_STORAGE_ACCOUNT --resource-group $RG |grep -i "value" | head -1 | awk -F'"' '{print $4}' `
+      export AZURE_STORAGE_ACCESS_KEY=$ACCESS_KEY
+      
+      az storage blob download-batch  --account-name ${AZURE_STORAGE_ACCOUNT} --account-key ${AZURE_STORAGE_ACCESS_KEY} -s "${service_name}-artifactory" -d .
+      '''
+}
+
+   stage ('Upload to ftp') {
+   if (service_name ==  'your service name') {
+    sh '''
+      set +xv
+      export RG=""
+      az webapp stop --resource-group  $RG --name ${service_name}
+
+    '''
+    azureWebAppPublish appName: 'your service name', azureCredentialsId: 'pluginID' , filePath: '**/*', publishType: 'file', resourceGroup: 'your resource group' , slotName: '', sourceDirectory: '.', targetDirectory: '.'
+    
+    sh '''
+      set +xv
+
+      export RG="resource-group"
+      az webapp start --resource-group  $RG --name ${service_name}
+
+	  '''
+	} 
+
+	else {
+
+    sh '''
+      set +xv
+
+      export RG="resource-group"
+      az webapp stop --resource-group  $RG --name ${service_name}
+      sleep ${delay}
+      pswd=`az webapp deployment list-publishing-profiles --name ${service_name} --resource-group ${RG} |jq ".[] |.userPWD" |tail -1 | sed -e "s|\\"||g"`
+      username=`az webapp deployment list-publishing-profiles --name ${service_name} --resource-group ${RG} |jq ".[] |.userName" |tail -1 | sed -e "s|\\"||g"`
+      ftphost=`az webapp deployment list-publishing-profiles --name ${service_name} --resource-group ${RG} |jq ".[] |.destinationAppUrl" |tail -1 | sed -e "s|\\"||g" | sed -e "s|^.*//||"`
+
+      echo "Uploading to ftp"
+
+      ftp -ipn $ftphost <<EOMYF
+      user $username $pswd
+      binary
+      cd site/wwwroot
+      mdel *
+      ls
+      mput *
+      quit
+EOMYF
+    
+    echo "Starting webapp ${service_name}"
+    az webapp start --resource-group  $RG --name ${service_name}'''
+    }
+  }
+  stage('deleteWorkspace'){
+      deleteDir()
+  }
+
+}
