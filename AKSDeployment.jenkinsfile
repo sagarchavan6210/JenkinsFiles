@@ -1,0 +1,96 @@
+pipeline {
+
+    options {
+        // Build auto timeout
+        timeout(time: 60, unit: 'MINUTES')
+    }
+    
+    parameters {
+        choice       (name: 'envr',                choices: 'dev\nnfr\nrc\ntest\nprod',  description: 'your envr')
+        string       (name: 'service_name',        defaultValue: '',                     description: 'service_name')
+        string       (name: 'account_name_prefix', defaultValue: '',                     description: 'max 4 Characters' )
+        booleanParam (name: 'deploy_secret',       defaultValue: false,                  description: 'deploy secret ??')
+        booleanParam (name: 'deploy_ingress',      defaultValue: false,                  description: 'deploy ingress ??')
+        booleanParam (name: 'deploy_namespace',    defaultValue: false,                  description: 'deploy namespace ??')
+        booleanParam (name: 'deploy_hpa',          defaultValue: false,                  description: 'deploy HPA ??')
+        booleanParam (name: 'deploy_configmap',    defaultValue: false,                  description: 'deploy configmap ??')
+
+    }
+
+
+    agent { node { label env.account_name_prefix + '-'+ env.envr } }
+
+    // Pipeline stages
+    stages {
+    	stage('Download-Manifest')
+   {
+   	 steps {
+    print '=-============================================-='
+    print 'Service Name: !!'+service_name+'!!'
+    print 'Acount Prefix: !!'+account_name_prefix+'!!'
+    print'=-=============================================-='
+
+    sh '''
+      set +xv
+      az login --identity
+
+      export AZURE_STORAGE_ACCOUNT=""
+      export RG=""
+
+      echo "=-============================================-="
+      echo RG: !!${RG}!!
+      echo AZURE_STORAGE_ACCOUNT: !!${AZURE_STORAGE_ACCOUNT}!!
+      echo "=-==========================================-=" 
+
+      ACCESS_KEY=`az storage account keys list --account-name $AZURE_STORAGE_ACCOUNT --resource-group $RG |grep -i "value" | head -1 | awk -F'"' '{print $4}' `
+      export AZURE_STORAGE_ACCESS_KEY=$ACCESS_KEY
+
+      az storage blob download-batch  --account-name ${AZURE_STORAGE_ACCOUNT} --account-key ${AZURE_STORAGE_ACCESS_KEY} -s "${service_name}-artifactory" -d .
+      
+      '''
+    }
+}
+
+   stage ('Deploy to k8s') {
+ steps {
+    sh '''
+      #!/bin/sh
+      az login --identity
+      rm -rf ~/.kube
+      az aks get-credentials --resource-group RG  --name AKS_NAME
+      
+      if [ $deploy_namespace != false ]
+      then 
+        kubectl apply -f aks/${service_name}-namespace.yml
+      fi
+      
+      if [ $deploy_secret != false ]
+      then
+        kubectl -n ${account_name_prefix} apply -f aks/${service_name}-secret.yml
+      fi
+      
+      if [ $deploy_hpa != false ]
+      then
+        kubectl -n ${account_name_prefix} apply -f aks/${service_name}-hpa.yml
+      fi
+      if [ $deploy_configmap != false ]
+      then
+        kubectl -n ${account_name_prefix} apply -f aks/${service_name}-configmap.yml
+      fi
+      
+      kubectl -n ${account_name_prefix} apply -f aks/${service_name}-deployment.yml
+      
+      svcname=`kubectl -n ${account_name_prefix} get svc ${service_name} --output=jsonpath={.metadata.name}` ||  echo "Failed to get service details. Probably you are deploying for the first time"
+      echo $svcname
+      
+      if [ x${service_name} != x${svcname} ] ; then kubectl -n ${account_name_prefix} apply -f aks/${service_name}-service.yml; else echo "Service ${service_name} already exists." ; fi 
+
+      if [ $deploy_ingress != false ] ; then kubectl apply  -f aks/${service_name}-ingress.yml; fi
+
+    '''}
+  }
+  stage('deleteWorkspace'){
+    steps {   deleteDir()}
+	  }	
+	}
+}
