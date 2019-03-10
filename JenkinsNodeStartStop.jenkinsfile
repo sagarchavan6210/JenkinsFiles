@@ -1,0 +1,112 @@
+properties(
+
+parameters([
+        choice(name: 'plan',        choices: ['start','stop'], description: ''), 
+        choice(name: 'environment', choices: ['dev', 'prod'],description: ''),
+        choice(name: 'vmname',      choices: ['all', 'vmname'], description: '')]),
+pipelineTriggers([parameterizedCron('''
+        45 16 * * * %plan=stop;vmname=all;environment=dev  
+        30 02 * * * %plan=start;vmname=all;environment=dev
+  ''')]
+ )])
+ 
+ timeout(time: 30, unit: 'MINUTES') {
+ node('master'){
+
+   stage('confirmation')
+   {
+
+   // Setting job description
+   currentBuild.description = "plan name: ${plan}, env: ${env.environment}, vm: ${vmname}"
+
+   // confirmation check 
+   if (environment != 'dev' && plan == 'start' )
+   {
+      wrap([$class: 'BuildUser']) {
+         BUILD_USER_FIRST_NAME =  env.BUILD_USER_FIRST_NAME
+      }
+      
+      // generate random ID 
+      randomid = UUID.randomUUID().toString()
+      
+      // setting mail recipient list 
+      mailrecipient = 'mailid'
+ 	  
+      // sending random ID in mail to responsible team
+      emailext body: '<font face="verdana" color="#1A5276" size="2"> Hi, <br><br>&nbsp; &nbsp;' + 
+                    'VM start request has been received for environment <b>' + env.environment + '</b> vmname <b>'+ env.vmname +
+                    '</b><br> &nbsp; &nbsp; This build is triggered by ' + BUILD_USER_FIRST_NAME +
+                    '</b><br> &nbsp; &nbsp; Use below token to start <br>&nbsp;&nbsp;&nbsp;' + randomid +
+                    '<br><br> &nbsp;&nbsp;&nbsp;&nbsp;Jenkins job URL:- '+ env.BUILD_URL +
+                    '<br> <br> With Regards,<br><b>DevOps Team</b ></font>',
+
+                 mimeType: 'text/html',
+                 subject: 'VM start request', to: mailrecipient
+                 //  recipientProviders: [[$class: 'DevelopersRecipientProvider'], [$class: 'RequesterRecipientProvider']],
+                 //  '${FILE,path="Seleniun/test-output/emailable-report.html"}',
+
+
+      Inputdata = input id: 'Step_I', message: 'Starting VM '+ vmname, ok: 'submit', parameters: [string(defaultValue: '', description: '', name: 'confirmation id', trim: false)], submitter: 'authenticated'
+
+      // Verifying Input
+      if( randomid == Inputdata){
+         echo "Starting VM confirmation id smatch"
+        }
+      else {
+          currentBuild.rawBuild.result = Result.ABORTED
+          throw new hudson.AbortException('skiping VM start plan confirmation id mismatch')
+        }
+      }
+      else {
+         echo "No confirmation required"
+      }     
+   }
+   
+   // Azure Login 
+   stage('AZ login'){
+      withCredentials([azureServicePrincipal('jenkins-node-vm-access')]) {
+      sh '''
+          set +xv
+          export HOME="./"
+          az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET -t $AZURE_TENANT_ID
+          az account set -s SUB_ID_VM_LOCATED
+        '''
+      }
+   }
+   
+   // Run plan for VM
+   stage ('az vm plan') {
+    sh '''#!/bin/bash
+        export HOME="./" ;
+        if [[ $vmname == "all" ]]; then
+           az vm $plan --ids $(az vm list -g mdsp-jenkins-node-$environment --query "[].id" -o tsv | grep -v "windows")
+          else
+            az vm $plan -g mdsp-jenkins-node-$environment -n $vmname-$environment
+          fi
+        '''
+    
+    withCredentials([
+    usernamePassword(credentialsId: 'jenkins_cli_creds', usernameVariable: 'username', passwordVariable: 'password')]){
+        sh '''#!/bin/bash
+            set +xv;
+            
+            if [[ $vmname != "all" && $plan == "start" ]]; then
+                
+                jar_path="/opt/jenkins-cli.jar"
+                jenkins_fqdn="JENKINS_URL"
+                
+                for (( i = 30; i > 0; i-- )); do echo "Connecting VM in $i sec"; sleep 1; done
+                echo "Connecting now"
+                
+                java -jar $jar_path -auth $username:$password -s $jenkins_fqdn connect-node $vmname-$environment
+            fi
+        '''
+    } 	
+  } 
+
+   // Clean Workspace
+   stage('clean Workspace'){
+      deleteDir()
+   }
+ }
+}
