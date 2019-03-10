@@ -1,0 +1,38 @@
+properties([parameters([
+	choice(choices: 'ANGULAR\nNODE', description: 'Application Type', name: 'Application_Type'),
+	choice(choices: 'dev\ntest', description: 'your subscription last three digit', name: 'environment'),
+	string(defaultValue: '', description: 'service_name', name: 'service_name'),
+	string(defaultValue: '', description: 'max 4 Characters', name: 'account_name_prefix'),
+	password(defaultValue: 'ClientId', description: 'ClientID', name: 'ClientID'),
+	password(defaultValue: 'ClientSecret', description: 'ClientSecret', name: 'ClientSecret'),
+	choice(choices: '100', description: 'your subscription last three digit', name: 'Subscription_id')
+])])
+
+node('master'){
+  stage('Login')
+   {
+   currentBuild.description = "service name:  ${service_name}"
+    sh '''
+      set +xv
+      az login --service-principal -u $ClientID -p $ClientSecret --tenant TENANT
+      az account set -s msa-000$Subscription_id
+      export AZURE_STORAGE_ACCOUNT="STORAGE_ACCOUNT"
+      export RG="RG"
+      export BLOB="${service_name}-jar"
+      ACCESS_KEY=`az storage account keys list --account-name $AZURE_STORAGE_ACCOUNT --resource-group $RG |grep -i "value" | head -1 | awk -F'"' '{print $4}' `
+      export AZURE_STORAGE_ACCESS_KEY=$ACCESS_KEY
+      az storage blob download-batch  --account-name ${AZURE_STORAGE_ACCOUNT} --account-key ${AZURE_STORAGE_ACCESS_KEY} -s "${service_name}-artifactory" -d .
+      '''
+}
+stage ('Upload to ftp') {
+    withEnv(['ACCOUNT_NAME_PREFIX='+account_name_prefix,'environment='+environment]) {
+	 if(Application_Type ==  'NODE'){
+	   azureWebAppPublish appName: "${service_name}", azureCredentialsId: 'JENKINSSUIID', filePath: '**/*', publishType: 'file', resourceGroup: "account_name_prefix+"-"+environment, slotName: '', sourceDirectory: 'src/', targetDirectory: '.'
+	 }
+	}
+}
+  }
+  stage('deleteWorkspace'){
+      deleteDir()
+  }
+}
