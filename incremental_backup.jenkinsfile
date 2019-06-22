@@ -1,0 +1,118 @@
+properties([parameters([
+	choice(choices: 'abc\pqr', description: 'account name prefix', name: 'account_name_prefix'),
+	choice(choices: 'dev\nprod', description: 'environment', name: 'env'),
+	string(defaultValue: '', description: 'Source Storage Account Name', name: 'source_storage_account'),
+])])
+nodename = env.account_name_prefix + '-' + env.env;
+node(nodename){
+  stage('AzureLogin') {
+        sh '''
+        set +xv
+		az login --identity
+        '''
+    }
+    stage('SetupForBackup'){
+      sh '''
+      set +xv
+	  ##Variable declaration##
+	  resource_group="mdsp-incrementalstbkp-${account_name_prefix}${env}"
+      backup_processor_storage="mdspbackprocess${account_name_prefix}${env}"
+      backup_storage_account="msdpbackup${account_name_prefix}${env}"
+      CWD=`pwd`
+	  UTIL_DIR=$CWD/utility
+	  
+	  az group create -l westeurope -n ${resource_group}
+	  
+	  sconnStr=`az storage account show-connection-string -g mdsp-${account_name_prefix}-${env} -n $source_storage_account | grep connectionString | awk -F'[:]' '{print $2}' | tr -d ' '`
+	  sourceConnStr=`echo s#${sconnStr} | sed 's/\"//g'`
+	  
+	  if [ "$(ls -A $CWD)" ]; then
+		echo "Directory is not empty"
+		ls
+	  else
+		az storage blob download-batch  --connection-string ${sourceConnStr} -s "incrementalst-bkp-utility" -d . || echo 'not found'
+        unzip utility.zip
+	  fi
+	  
+	  #Verify Storage accounts exist
+	  st_list=`az storage account list -g $resource_group |jq .[].name`
+	  if echo "$st_list" |grep $backup_processor_storage ; then  
+	        echo "$backup_processor_storage already exist"
+	  else
+	        az storage account create -n $backup_processor_storage -g $resource_group -l westeurope --sku Standard_LRS
+	  fi
+	  
+      if echo "$st_list" |grep $backup_storage_account ; then
+			echo "$backup_storage_account already exist"
+      else
+	        az storage account create -n $backup_storage_account -g $resource_group -l westeurope --sku Standard_LRS
+	  fi
+	  
+	  #Verify storage kind and upgrade Storage account to General Purpose V2  
+	  source_storage_kind=`az storage account show --n $source_storage_account -g mdsp-${account_name_prefix}-${env} | jq .kind`
+	  processor_storage_kind=`az storage account show --n $backup_processor_storage -g $resource_group | jq .kind`
+	  backup_storage_kind=`az storage account show --n $backup_storage_account -g $resource_group | jq .kind`
+	  
+	  if [ $source_storage_kind != "StorageV2" ]; then
+		az storage account update -g mdsp-${account_name_prefix}-${env} -n $source_storage_account --set kind=StorageV2
+	  fi
+	  
+	  if [ $processor_storage_kind != "StorageV2" ]; then
+		az storage account update -g $resource_group -n $backup_processor_storage --set kind=StorageV2
+	  fi
+
+	  if [ $backup_storage_kind != "StorageV2" ]; then
+		az storage account update -g $resource_group -n $backup_storage_account --set kind=StorageV2
+	  fi
+	  
+      #Get connection string of storage accounts
+      bkpProcConnStr=`az storage account show-connection-string -g $resource_group -n $backup_processor_storage | grep connectionString | awk -F'[:]' '{print $2}' | tr -d ' '`
+      bkpConnStr=`az storage account show-connection-string -g $resource_group -n $backup_storage_account | grep connectionString | awk -F'[:]' '{print $2}' | tr -d ' '`
+      
+	  
+	  cp $UTIL_DIR/appsettings.json $UTIL_DIR/appsettings.json_orig
+	  cp $UTIL_DIR/downloadextract.ps1 $UTIL_DIR/downloadextract.ps1_orig
+	  
+      sed -e "s#sourceConnStr#${sourceConnStr}#g; s#bkpProcConnStr#${bkpProcConnStr}#g; s#bkpConnStr#${bkpConnStr}#g" -i "$UTIL_DIR/downloadextract.ps1"
+	  
+	  sed -e "s#bkpProcConnStr#${bkpProcConnStr}#g" -i "$UTIL_DIR/appsettings.json"
+	  
+	  az storage container create --name backuprestoreutility --connection-string $bkpProcConnStr
+      az storage blob upload --container-name backuprestoreutility --file $UTIL_DIR/appsettings.json --name appsettings.json --connection-string $bkpProcConnStr
+	  az storage blob upload --container-name backuprestoreutility --file $UTIL_DIR/downloadextract.ps1 --name downloadextract.ps1 --connection-string $bkpProcConnStr
+	  
+      mv $UTIL_DIR/appsettings.json_orig $UTIL_DIR/appsettings.json
+	  mv $UTIL_DIR/downloadextract.ps1_orig $UTIL_DIR/downloadextract.ps1
+	  
+      #Create container and upload utility and script
+      
+      az storage blob upload --container-name backuprestoreutility --file $UTIL_DIR/BackupRestore.zip --name BackupRestore.zip --connection-string $bkpProcConnStr
+      az storage blob upload --container-name backuprestoreutility --file $UTIL_DIR/dotnet-sdk-2.1.301-win-x64.exe --name dotnet-sdk-2.1.301-win-x64.exe --connection-string $bkpProcConnStr
+      
+      #create event queue, table and eventgrid into storage account
+      az storage queue create --name eventqueue --connection-string $bkpProcConnStr
+      az storage table create --name storageevents --connection-string $bkpProcConnStr
+      #egext=`az extension list | grep name | awk -F'[:]' '{print $2}'| sed -e 's/[",]//g' | tr -d ' '`
+      extsn_list=`az extension list |jq .[].name`
+      echo $extsn_list
+      if echo $extsn_list | grep "eventgrid"; then
+            echo "eventgrid extension already exist"
+      else
+            az extension add --name eventgrid
+      fi
+	  
+      #az eventgrid event-subscription create --resource-id "/subscriptions/$subscriptionID/resourceGroups/$resource_group/providers/Microsoft.Storage/storageAccounts/$source_storage_account/" -g "$resource_group" --name "backupconsumer" --endpoint-type storagequeue --endpoint "/subscriptions/$subscriptionID/resourceGroups/$resource_group/providers/Microsoft.Storage/storageAccounts/$backup_processor_storage/queueServices/default/queues/eventqueue"
+ 
+      #Create Windows VM
+	  vmName="ProcessorVm"
+      vmPublicIP=`az vm create --resource-group ${resource_group} --location "West Europe" --name ${vmName} --image win2016datacenter --admin-username azureuser --admin-password myPassword12 | grep publicIpAddress | awk -F'[:]' '{print $2}' | tr -d ' '`
+      echo "--------------------------------------------------------------------------------"
+      echo "Use following public ip of Windows while connecting : ${vmPublicIP}"
+      echo "--------------------------------------------------------------------------------"
+	  az vm extension set --resource-group "${resource_group}" --vm-name "${vmName}" --name "CustomScriptExtension" --publisher Microsoft.Compute --version 1.9 --protected-settings '{"storageAccountName":"${backup_processor_storage}","storageAccountKey":"66kP1LYtUSUkqcO7FNlhGYh3OdSFnMTdxexisdLPwiLi25JUT2rDFK2t+lUeLugqPjcw3hUns6X0dBNdPTtl5w=="}' --settings '{"fileUris":["https://${backup_processor_storage}.blob.core.windows.net/backuprestoreutility/downloadextract.ps1"],"commandToExecute":"powershell -ExecutionPolicy Unrestricted -File downloadextract.ps1"}'
+      '''
+    }
+	stage('deleteWorkspace'){
+      deleteDir()
+	}
+}
