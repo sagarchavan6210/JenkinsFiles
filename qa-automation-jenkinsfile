@@ -1,0 +1,46 @@
+properties([parameters([
+	choice(choices: 'qa\napp\ndev\ntorana\ndemo', description: 'your env name', name: 'envt'),
+	choice(choices: 'discover\nattach\ndetach\nbuild_image\ndeploy', description: 'process  to perform', name: 'process_name'),
+	choice(choices: 'ubuntu\ncentos\nec2-instance', description: 'Host User Name', name: 'host_user'),
+    string(defaultValue: '10.123.24.5', description: 'Enter Host IP', name: 'host_ip'),
+    credentials(defaultValue: 'sagar', description: ' Credentials', name: 'creds-id')
+])])
+nodename = 'master';
+
+node(nodename){
+   stage('Git Pull')
+    {
+        print '=-============================================-='
+        print 'Please validate inputs'
+        print 'Environment Name : '+envt+''
+        print 'Process Name : '+process_name+''
+        print 'Host User Name : '+host_user+''
+        print 'Host IP : '+host_ip+''
+        print '=-============================================-='
+        print 'Running Git SCM'
+        print'=-=============================================-='
+        sh '''
+          set +xv
+          echo "Running Git clone"
+        '''
+    }
+    stage('Login with CH') {
+		withCredentials([
+		usernamePassword(credentialsId: '${creds-id}', usernameVariable: 'username', passwordVariable: 'password')]){
+		sh '''#!/bin/bash
+			set +x
+			echo "Login to cludhedge tool"
+		'''
+		}
+    } 
+    stage('Test Execution')
+    {
+        print '=-============================================-='
+        print 'Running Test Execution'
+        print'=-=============================================-='
+		sh '''
+		    set +xv
+			echo "Running test caes"
+		'''
+    }
+}
