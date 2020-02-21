@@ -1,0 +1,43 @@
+properties([parameters([
+	choice(choices: 'ubuntu\ncentos\nec2-user', description: 'Host User Name', name: 'host_user'),
+  string(defaultValue: 'java', description: 'Enter Process Name', name: 'process_name'),
+	password(defaultValue: '', description: 'Enter AWS key', name: 'aws_key'),
+	password(defaultValue: '', description: 'Enter AWS secret', name: 'aws_secret'),
+  credentials(defaultValue: 'sagar', description: 'CloudHedge Credentials', name: 'creds-id')
+])])
+nodename = 'master';
+
+node(nodename){
+   stage('Git Pull')
+    {
+        print '=-============================================-='
+        print 'Please validate inputs'
+        print 'Environment Name : '+envt+''
+        print '=-============================================-='
+        print 'Running Git SCM'
+        print'=-=============================================-='
+        git branch: 'dev', credentialsId: '', url: 'git@gitlab.com:repo'
+    }
+    stage('Test Execution') {
+        print '=-============================================-='
+        print 'Running Test Execution'
+        print'=-=============================================-='
+		    withCredentials([
+		    usernamePassword(credentialsId: '${creds-id}', usernameVariable: 'username', passwordVariable: 'password')]){
+		    sh '''#!/bin/bash
+			    echo "Login to cludhedge tool"
+			    set +xv
+		      echo "NPM Version Validation"
+		      npm -v
+		      echo "NODE Version Validation"
+		      node -v
+		      echo "Running Test Cases..."
+		      cd api-test-suite
+		      pwd
+		      npm install
+		
+		      env=${envt} email=${username} password=${password} process=${process_name} nodeuser=${host_user} hostip=${host_ip} dockerhubusername=${dockerhub_user} dockerhubpassword=${dockerhub_pass} awsaccesskey=${aws_key} awssecretKey=${aws_secret} dockerrepository=${docker_repo} buildboxusername=${buildbox_user} buildboxhost=${buildbox_host} ecrrepository=${ecr_repo} server=${ecr_url} npm test
+		'''
+		}
+    }
+}
