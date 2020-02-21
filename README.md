@@ -19,3 +19,4 @@ sh```
     aws configure set aws_secret_access_key ${AWS_SECRET_ACCESS_KEY}
     aws configure set region ${AWS_REGION}
 }
+```
