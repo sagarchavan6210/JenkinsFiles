@@ -1,0 +1,127 @@
+String nodename = 'master';
+String result = null;
+String host_ip = null;
+String buildbox_ip = null;
+
+
+node(nodename){
+    try{
+        stage('Git Pull') {
+            print '=-============================================-='
+            print 'Running Git SCM'
+            print'=-=============================================-='
+            git branch: 'dev', credentialsId: '', url: 'git@gitlab.com:repo.git'
+        }
+        stage('Setup Terraform'){
+            sh'''
+            type -P ./terraform &>/dev/null && echo "terraform is already installed." || echo "terraform is not installed in local repository."
+            '''
+        }
+        stage('Create AWS Instances'){
+            withCredentials([[
+            $class: 'AmazonWebServicesCredentialsBinding',
+            credentialsId: 'uupadhyay_aws',
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+        ]]) {
+            sh'''
+            echo "--===========================================--"
+            echo "Creating EC2 Instances using Terraform"
+            ./terraform init
+            echo "Terraform Init is Done"
+            echo "--===========================================--"
+            ./terraform plan
+            echo "Terraform Plan is Done"
+            echo "--===========================================--"
+            ./terraform apply --auto-approve
+            sleep 150
+            echo "Machines are created on AWS using Terraform"
+            echo "--===========================================--"
+            '''
+            }
+        }
+        stage('Build Verification using CLI') {
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', accessKeyVariable: 'access_key', credentialsId: 'aws', secretKeyVariable: 'secret_key'], 
+    	    usernamePassword(credentialsId: 'dockerhub', passwordVariable: 'dockerhub_pass', usernameVariable: 'dockerhub_user'), 
+    	    usernamePassword(credentialsId: '', passwordVariable: 'password', usernameVariable: 'username')]) {
+                sh'''
+    	        #!/bin/bash 
+    	        set +xv
+    	        buildbox_ip=$(./terraform output buildbox_public_ip)
+              host_ip=$(./terraform output host_public_ip)
+              echo "host_ip = $host_ip"
+              echo "buildbox_ip = $buildbox_ip"
+    	        buildbox_user="ubuntu"
+    	        host_user="ubuntu"
+    	        env_url="https://appurl"
+    	        datetm=`date '+%y%m%d%H%M%S'`
+    	        var=`echo $RANDOM | tr '[0-9]' '[a-z]' | cut -c -3`
+    	        node_name="NODE${datetm}"
+    	        ##Valult Variables
+    	        win_vault=WINVAULT
+    	        aws_vault=AWSVAULT
+    	        ssh_vault=SSHVAULT
+    	        dockerhub_vault=DOCKERHUB
+    	        cluster_name=chawscluster
+    	        app_name=chapp$var	
+    	        service_name=clideploy
+    	        app_version=chcli$var
+    	        deployment_name=sag$var
+    	        image="akshaytu/qatest"
+    	        tag=nginxtest
+    	        port=80
+    	        trans_image="akshaytu/chclidemo"
+    	        trans_tag=$var
+    	        chmod +x chcli
+            
+                ##Login to CHCLI
+                echo "--===========================================--"
+                out=`./utility login --username=$username --password=$password --server=$env_url` # &> /dev/null
+                
+                echo "Login status: "
+                echo ""
+                echo "$out" | grep success | sed s'/[",]//g' | sed s'/^ *//g'
+                echo "--===========================================--"
+                echo ""
+                echo "Login Successful"
+            }
+        } 
+    }
+    catch(e) {
+        result = "Failed";
+        throw e
+    }
+    finally {
+        stage('Delete Node from UI'){
+            sh'''
+            if test -f node_id; then
+                ./chcli node deleteNode --nodeId $(cat node_id)
+            else
+                echo "The node was not created"
+            fi
+            '''
+        }
+        stage('Delete AWS Instances'){
+            withCredentials([[
+            $class: 'AmazonWebServicesCredentialsBinding',
+            credentialsId: 'aws',
+            accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+            secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+        ]]){
+            sh'''
+            if [ -f terraform.tfstate ]; then
+                [ -s terraform.tfstate ] && ./terraform destroy --auto-approve || echo 'file is empty'
+            else
+                echo "AWS instances were not created"
+            fi
+            '''
+            }
+        }
+        stage('Delete Workspace'){
+            deleteDir()
+        }
+        stage('Email Notification'){
+            mail bcc: '', body: "The Verification of the build of CH-CLI has ${result}.\n Link of the job is ${env.BUILD_URL}", cc: '', from: '', replyTo: '', subject: "CH-CLI Verification Jenkins_Job#${BUILD_NUMBER} has ${result}", to: 'abc@testmail.com'
+        }
+    }
+}
