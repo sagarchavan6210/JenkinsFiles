@@ -1,0 +1,20 @@
+nodename = 'master';
+
+node(nodename){
+    stage('Upload') {
+    dir('/var/lib/jenkins/workspace/Build-Validation/api-test-suite'){
+
+            pwd(); //Log current directory
+            withAWS(region:'us-east-1',credentials:'at_aws') {
+                def identity=awsIdentity();//Log AWS credentials
+                def BUILDVERSION = sh(script: "echo `date +'%Y%m%d%H%M%S'`", returnStdout: true).trim()
+                
+                s3Upload(bucket:"saggy-qa-infra-tfstate/reports/$BUILDVERSION", workingDir:'reports', includePathPattern:'**/*');
+                print 'Report URL: '
+                print 'https://saggy-qa-infra-tfstate.s3.amazonaws.com/reports/'+BUILDVERSION+'/bvt-api-test-report.html'
+            }
+        }
+	}
+}
+
+
